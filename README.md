@@ -123,5 +123,4 @@ Below are photos and screenshots you captured during testing. They show the devi
 - **Exported CSV file**
 	![CSV file data](screenshots/csvfiledata.png)
 	*Downloaded CSV file containing timestamped GSR values used for ML training.*
-
-Make sure the `screenshots/` folder is added to the repository before pushing so these images appear on GitHub.
+.
