@@ -1,24 +1,30 @@
 #include <WiFi.h>
 #include <WebServer.h>
-#include <Preferences.h>
+#include <EEPROM.h>
 
 // إعدادات الواي فاي
-const char* ssid = "HUAWEI-100A7N";
-const char* password = "Trabzon6167";
+const char* ssid = "TEKMER WIFI";
+const char* password = "IAU-Tekmer2025";
 
-WebServer server(80);
+// Static IP Configuration
+IPAddress localIP(10, 155, 83, 100);      // IP ثابت
+IPAddress gateway(10, 155, 83, 1);
+IPAddress subnet(255, 255, 255, 0);
+IPAddress primaryDNS(8, 8, 8, 8);
 
-#define GSR_PIN 34 // منفذ ADC لقراءة GSR
+// LED Configuration
+#define LED_BLUE 2        // LED الأزرق (GPIO 2)
+#define GSR_PIN 34        // منفذ ADC لقراءة GSR
+#define LED_BLINK_INTERVAL 500  // مللي ثانية
 const float R_SERIES = 10000.0; // قيمة المقاومة المتسلسلة (R1) في دائرة مقسم الجهد (10k Ohm)
 const float ADC_MAX = 4095.0;   // أقصى قيمة لـ ADC في ESP32 (12-bit)
 
-#define LED_PIN 2
+WebServer server(80);
+
+// متغيرات LED
 bool wifiConnected = false;
-unsigned long lastBlinkTime = 0;
-bool ledState = false;
-const unsigned long BLINK_INTERVAL = 1000; // blink when not connected
-const int WIFI_ATTEMPTS = 60; // number of 500ms attempts = 30s
-Preferences prefs;
+unsigned long lastLEDToggle = 0;
+bool ledState = LOW;
 
 // تعريف مراحل التجربة
 struct Stage {
@@ -28,11 +34,11 @@ struct Stage {
 };
 
 Stage stages[] = {
-  {"Calibration", 20000, "System calibration (20 seconds)"},
-  {"Normal", 240000, "Watch video (4 minutes)"},
-  {"Stress", 180000, "Remove 12 pieces with 85dB noise (3 minutes)"},
-  {"Relaxation", 60000, "Relax with music (1 minute)"},
-  {"Finished", 0, "Session complete"}
+  {"callibration", 20000, "callibration (20 seconds)"},
+  {"Normal stage", 240000, "Normal stage (4 minutes)"},
+  {"Stress", 180000, "Stress (3 minutes)"},
+  {"Relaxation", 60000, "Relaxation (1 minute)"},
+  {"Session complete", 0, "Session complete"}
 };
 
 bool recording = false;
@@ -57,19 +63,11 @@ float readGSRResistance() {
 // دالة تحديث المرحلة وإعداد استجابة JSON
 String getStageJson() {
   if (!recording) {
-    // إذا كانت الجلسة متوقفة، نرسل JSON غير فارغ حتى لا تعتبر الواجهة أن الجلسة انتهت
+    // إذا كانت الجلسة متوقفة، نرسل مؤشر للمرحلة النهائية إذا كان هو الحالي
     if (currentStage == sizeof(stages)/sizeof(Stage) - 1) {
         return "{\"finished\": true}"; 
     }
-    String j = "{";
-    j += "\"elapsed\":0,";
-    j += "\"remaining\":" + String(stages[0].duration / 1000) + ",";
-    j += "\"value\":0.00,";
-    j += "\"stage\":\"Idle\",";
-    j += "\"description\":\"Idle\",";
-    j += "\"stageDuration\":0";
-    j += "}";
-    return j;
+    return "{}";
   }
 
   unsigned long now = millis();
@@ -130,7 +128,7 @@ const char htmlPage[] PROGMEM = R"rawliteral(
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
   <style>
-    /* ... (Your CSS styles remain unchanged) ... */
+    /* Page styles with camera box support */
     :root {
       --primary: #3b82f6; /* أزرق */
       --secondary: #10b981; /* أخضر */
@@ -262,16 +260,32 @@ const char htmlPage[] PROGMEM = R"rawliteral(
       background-color: var(--primary);
       transition: width 1s linear;
     }
+
+    /* Camera box (top-left) */
+    .cam-box{ position:fixed; top:20px; left:20px; width:220px; height:160px; background:#ffffffcc; border-radius:10px; overflow:hidden; box-shadow:0 6px 18px rgba(0,0,0,0.12); z-index:1200; display:flex; align-items:center; justify-content:center; flex-direction:column }
+    .cam-box video{ width:100%; height:100%; object-fit:cover }
+    .cam-overlay{ position:absolute; left:6px; top:6px; right:6px; display:flex; justify-content:space-between; align-items:center; gap:6px }
+    #camStatus{ font-size:12px; color:#0f172a; background:#ffffffcc; padding:4px 8px; border-radius:6px }
+    #enableCamBtn{ padding:6px 8px; font-size:12px; border-radius:6px; border:none; background:#3b82f6; color:#fff; cursor:pointer }
   </style>
 </head>
 <body>
   <div class="container">
-    <header>
-      <h1>GSR Stress Monitor</h1>
-      <p>Real-time Galvanic Skin Response (GSR) Monitoring</p>
-    </header>
+      <div id="camBox" class="cam-box" aria-live="polite">
+        <video id="localVideo" autoplay playsinline muted></video>
+        <div id="camOverlay" class="cam-overlay">
+          <div id="camStatus">Camera: inactive — click Enable</div>
+          <button id="enableCamBtn">Enable Camera</button>
+        </div>
+      </div>
+      <header>
+        <h1>GSR Stress Monitor</h1>
+        <p>Real-time Galvanic Skin Response (GSR) Monitoring</p>
+        <p id="connectionStatus" style="font-size: 14px; color: #10b981;"><i class="fas fa-check-circle"></i> ESP32 Connected: 10.155.83.100</p>
+      </header>
 
     <div class="controls">
+      <input type="number" id="volunteerIdInput" placeholder="Volunteer ID" min="1" style="padding: 10px 20px; border: 1px solid var(--subtext); border-radius: 8px; font-size: 16px;">
       <button id="startButton" class="button">
         <i class="fas fa-play"></i> Start Session
       </button>
@@ -308,62 +322,104 @@ const char htmlPage[] PROGMEM = R"rawliteral(
     </div>
 
     <script>
-      const ctx = document.getElementById('chart').getContext('2d');
-      const chart = new Chart(ctx, {
-        type: 'line',
-        data: {
-          labels: [],
-          datasets: [{
-            label: 'Resistance (Ω)',
-            data: [],
-            borderColor: 'var(--primary)',
-            borderWidth: 2,
-            tension: 0.3,
-            pointRadius: 0,
-            fill: false,
-          }]
-        },
-        options: {
-          responsive: true,
-          maintainAspectRatio: false,
-          plugins: {
-            legend: { display: false },
-            tooltip: {
-              mode: 'index',
-              intersect: false,
-              backgroundColor: 'var(--surface)',
-              titleColor: '#94A3B8',
-              bodyColor: 'var(--text)'
-            }
-          },
-          scales: {
-            x: { 
-              title: { 
-                display: true, 
-                text: 'Time (seconds)', 
-                color: 'var(--text)' 
-              },
-              ticks: { color: 'var(--subtext)' },
-              grid: { color: '#e5e7eb' }
-            },
-            y: { 
-              title: { 
-                display: true, 
-                text: 'Resistance (Ω)', 
-                color: 'var(--text)' 
-              },
-              ticks: { color: 'var(--subtext)' },
-              grid: { color: '#e5e7eb' }
-            }
-          }
-        }
+      // تكوين الـ IP الثابت للـ ESP32
+      const ESP32_IP = "10.155.83.100";
+      const ESP32_PORT = 80;
+      const ESP32_URL = `http://${ESP32_IP}:${ESP32_PORT}`;
+      
+      // التحقق من الاتصال بالـ ESP32 عند تحميل الصفحة
+      window.addEventListener('load', () => {
+        checkESP32Connection();
       });
+      
+      async function checkESP32Connection() {
+        try {
+          const response = await fetch(`${ESP32_URL}/resistance`, {
+            method: 'GET',
+            mode: 'no-cors'
+          });
+          document.getElementById('connectionStatus').innerHTML = 
+            '<i class="fas fa-check-circle"></i> ESP32 Connected: ' + ESP32_IP;
+          document.getElementById('connectionStatus').style.color = '#10b981';
+        } catch (err) {
+          document.getElementById('connectionStatus').innerHTML = 
+            '<i class="fas fa-exclamation-circle"></i> ESP32 Not Connected - Check IP';
+          document.getElementById('connectionStatus').style.color = '#ef4444';
+          console.warn('ESP32 not reachable at', ESP32_URL);
+        }
+      }
+
+      // Initialize chart.js safely: if CDN failed to load, don't stop the rest of the script
+      let chart = null;
+      try {
+        const ctxEl = document.getElementById('chart');
+        if (ctxEl && typeof Chart !== 'undefined') {
+          const ctx = ctxEl.getContext('2d');
+          chart = new Chart(ctx, {
+            type: 'line',
+            data: {
+              labels: [],
+              datasets: [{
+                label: 'Resistance (Ω)',
+                data: [],
+                borderColor: getComputedStyle(document.documentElement).getPropertyValue('--primary') || '#3b82f6',
+                borderWidth: 2,
+                tension: 0.3,
+                pointRadius: 0,
+                fill: false,
+              }]
+            },
+            options: {
+              responsive: true,
+              maintainAspectRatio: false,
+              plugins: {
+                legend: { display: false },
+                tooltip: {
+                  mode: 'index',
+                  intersect: false,
+                  backgroundColor: 'var(--surface)',
+                  titleColor: '#94A3B8',
+                  bodyColor: 'var(--text)'
+                }
+              },
+              scales: {
+                x: { 
+                  title: { 
+                    display: true, 
+                    text: 'Time (seconds)', 
+                    color: 'var(--text)' 
+                  },
+                  ticks: { color: 'var(--subtext)' },
+                  grid: { color: '#e5e7eb' }
+                },
+                y: { 
+                  title: { 
+                    display: true, 
+                    text: 'Resistance (Ω)', 
+                    color: 'var(--text)' 
+                  },
+                  ticks: { color: 'var(--subtext)' },
+                  grid: { color: '#e5e7eb' }
+                }
+              }
+            }
+          });
+        } else {
+          console.warn('Chart.js not loaded or canvas missing. Chart disabled.');
+        }
+      } catch (err) {
+        console.error('Chart initialization failed:', err);
+      }
 
       let dataLog = [];
       let sessionActive = false;
       let intervalId = null;
       // متغير لتتبع ما إذا كان التحميل التلقائي قد حدث بالفعل
-      let autoDownloadExecuted = false; 
+      let autoDownloadExecuted = false;
+      // متغير لحفظ ملف الفيديو
+      let mediaRecorder = null;
+      let recordedChunks = [];
+      let videoStream = null; 
 
       // دالة موحدة لتحميل ملف CSV
       function downloadCSV() {
@@ -386,6 +442,52 @@ const char htmlPage[] PROGMEM = R"rawliteral(
         a.click();
         URL.revokeObjectURL(url);
         console.log("CSV file successfully generated and downloaded!");
+        
+        // محاولة رفع الملف إلى OneDrive
+        uploadToOneDrive(blob, "GSR_Data.csv");
+      }
+      
+      // دالة رفع ملف إلى OneDrive
+      async function uploadToOneDrive(blob, filename) {
+        const volunteerId = document.getElementById("volunteerIdInput").value;
+        
+        if (!volunteerId) {
+          console.warn("Volunteer ID not provided. Skipping OneDrive upload.");
+          return;
+        }
+        
+        try {
+          // تحويل البيانات إلى Base64 للرفع
+          const reader = new FileReader();
+          reader.onload = async () => {
+            const base64Data = reader.result.split(',')[1];
+            
+            // إرسال طلب الرفع إلى الخادم الخلفي
+            const uploadResponse = await fetch('http://localhost:5000/api/upload', {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json'
+              },
+              body: JSON.stringify({
+                volunteer_id: volunteerId,
+                filename: filename,
+                file_data: base64Data,
+                email: 'kfupm@almutlaqunited.com',
+                password: 'Muc@2026'  // تحذير: يجب تخزينها بشكل آمن!
+              })
+            });
+            
+            if (uploadResponse.ok) {
+              console.log('File uploaded to OneDrive successfully');
+            } else {
+              console.warn('Failed to upload to OneDrive:', uploadResponse.statusText);
+            }
+          };
+          reader.readAsDataURL(blob);
+          
+        } catch (error) {
+          console.error('Error uploading to OneDrive:', error);
+        }
       }
 
       document.getElementById("startButton").onclick = () => {
@@ -395,7 +497,7 @@ const char htmlPage[] PROGMEM = R"rawliteral(
         chart.update();
         autoDownloadExecuted = false; // إعادة تعيين حالة التحميل التلقائي
         
-        fetch("/start")
+        fetch(`${ESP32_URL}/start`)
           .then(() => {
             document.getElementById("startButton").disabled = true;
             document.getElementById("stopButton").disabled = false; // الزر شغال
@@ -408,7 +510,7 @@ const char htmlPage[] PROGMEM = R"rawliteral(
       };
 
       document.getElementById("stopButton").onclick = () => {
-        fetch("/stop")
+        fetch(`${ESP32_URL}/stop`)
           .then(() => {
             document.getElementById("startButton").disabled = false;
             document.getElementById("stopButton").disabled = true; // يتم تعطيله بعد الضغط اليدوي
@@ -446,7 +548,7 @@ const char htmlPage[] PROGMEM = R"rawliteral(
         }
         
         try {
-          const response = await fetch('/resistance');
+          const response = await fetch(`${ESP32_URL}/resistance`);
           const data = await response.json();
           
           if (Object.keys(data).length === 0 || data.finished) {
@@ -502,73 +604,99 @@ const char htmlPage[] PROGMEM = R"rawliteral(
           console.error('Error fetching data:', error);
         }
       }
+
+        // Camera handling: request camera permission and start local video on page load
+        const videoEl = document.getElementById('localVideo');
+        const camStatus = document.getElementById('camStatus');
+        const enableBtn = document.getElementById('enableCamBtn');
+
+        function isSafari(){ return /^((?!chrome|android).)*safari/i.test(navigator.userAgent); }
+
+        async function startCamera(){
+          if(!navigator || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+            camStatus.textContent = 'Camera API not supported';
+            enableBtn.style.display = 'none';
+            console.warn('getUserMedia not available');
+            return;
+          }
+          try{
+            camStatus.textContent = 'Camera: requesting...';
+            const stream = await navigator.mediaDevices.getUserMedia({ video:{ facingMode:'user' }, audio:false });
+            videoEl.srcObject = stream;
+            camStatus.textContent = 'Camera: active';
+            enableBtn.style.display = 'none';
+            console.log('Camera stream started');
+          } catch(err){
+            console.error('Camera start failed:', err);
+            if(isSafari()){
+              camStatus.textContent = 'Camera blocked by Safari (requires HTTPS). Try Chrome or enable manually.';
+            } else {
+              camStatus.textContent = 'Camera blocked/unavailable — click Enable to retry';
+            }
+            enableBtn.style.display = 'inline-block';
+          }
+        }
+
+        enableBtn.onclick = () => { startCamera(); };
+
+        window.addEventListener('load', () => {
+          if(!navigator || !navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+            camStatus.textContent = 'Camera API not supported';
+            enableBtn.style.display = 'none';
+          } else {
+            enableBtn.style.display = 'inline-block';
+            if(isSafari()){
+              camStatus.textContent = 'Safari may require HTTPS; click Enable or use Chrome';
+            } else {
+              camStatus.textContent = 'Requesting camera access...';
+              // try to start camera immediately (may be blocked on some browsers)
+              startCamera();
+            }
+          }
+        });
     </script>
 </body>
 </html>
 )rawliteral";
 
-// AP fallback credentials
-const char* ap_ssid = "GSR_Monitor";
-const char* ap_pass = "12341234";
-
 void setup() {
   Serial.begin(115200);
-  pinMode(LED_PIN, OUTPUT);
-  digitalWrite(LED_PIN, LOW);
   pinMode(GSR_PIN, INPUT);
+  pinMode(LED_BLUE, OUTPUT);
+  digitalWrite(LED_BLUE, LOW);  // إطفاء LED في البداية
 
   analogReadResolution(12); // تعيين دقة القراءة إلى 12 بت (4096 قيمة)
-  // Force AP-only mode per user request (do not attempt STA)
-  Serial.println("Starting Access Point (AP-only) per user request");
-  WiFi.mode(WIFI_AP);
-  bool ok = WiFi.softAP(ap_ssid, ap_pass);
-  if (!ok) {
-    Serial.println("Failed to start AP with password; starting open AP");
-    WiFi.softAP(ap_ssid);
-  } else {
-    Serial.print("AP password: ");
-    Serial.println(ap_pass);
+
+  // تكوين الـ Static IP قبل الاتصال
+  if (!WiFi.config(localIP, gateway, subnet, primaryDNS)) {
+    Serial.println("Failed to configure Static IP");
   }
-  Serial.print("AP IP: ");
-  Serial.println(WiFi.softAPIP());
-  wifiConnected = true; // treat AP as connected for UI
-  digitalWrite(LED_PIN, HIGH);
-  ledState = true;
+
+  // الاتصال بالواي فاي
+  WiFi.begin(ssid, password);
+  Serial.print("Connecting to WiFi with Static IP");
+  
+  int wifiAttempts = 0;
+  while (WiFi.status() != WL_CONNECTED && wifiAttempts < 20) {
+    delay(500);
+    Serial.print(".");
+    wifiAttempts++;
+  }
+  
+  if (WiFi.status() == WL_CONNECTED) {
+    wifiConnected = true;
+    Serial.println("\nConnected! IP: " + WiFi.localIP().toString());
+  } else {
+    Serial.println("\nFailed to connect to WiFi");
+    wifiConnected = false;
+  }
 
   // تحديد مسارات الخادم (Server Routes)
   server.on("/", HTTP_GET, []() {
-    Serial.println("HTTP / (root) called");
     server.send_P(200, "text/html", htmlPage);
   });
 
-  // respond to common icon requests with empty 204 to avoid connection resets
-  server.on("/favicon.ico", HTTP_GET, []() {
-    Serial.println("HTTP /favicon.ico called");
-    server.send(204, "image/x-icon", "");
-  });
-  server.on("/apple-touch-icon.png", HTTP_GET, []() {
-    Serial.println("HTTP /apple-touch-icon.png called");
-    server.send(204, "image/png", "");
-  });
-  server.on("/apple-touch-icon-precomposed.png", HTTP_GET, []() {
-    Serial.println("HTTP /apple-touch-icon-precomposed.png called");
-    server.send(204, "image/png", "");
-  });
-
-  // simple ping endpoint for diagnostics
-  server.on("/ping", HTTP_GET, []() {
-    Serial.println("HTTP /ping called");
-    server.sendHeader("Access-Control-Allow-Origin", "*");
-    server.send(200, "text/plain", "ok");
-  });
-
-  server.onNotFound([](){
-    Serial.printf("HTTP NOT FOUND: %s\n", server.uri().c_str());
-    server.send(404, "text/plain", "Not found");
-  });
-
   server.on("/start", HTTP_GET, []() {
-    Serial.println("HTTP /start called");
     recording = true;
     sessionStartTime = millis();
     stageStartTime = millis();
@@ -578,76 +706,59 @@ void setup() {
   });
 
   server.on("/stop", HTTP_GET, []() {
-    Serial.println("HTTP /stop called");
     recording = false;
     server.sendHeader("Access-Control-Allow-Origin", "*");
     server.send(200, "text/plain", "Session stopped");
   });
 
   server.on("/resistance", HTTP_GET, []() {
-    Serial.println("HTTP /resistance called");
     server.sendHeader("Access-Control-Allow-Origin", "*");
-    String j = getStageJson();
-    server.send(200, "application/json", j);
+    server.send(200, "application/json", getStageJson());
   });
 
-  // API to scan nearby networks (returns JSON array)
-  server.on("/scan", HTTP_GET, []() {
-    int n = WiFi.scanNetworks();
-    String j = "[";
-    for (int i = 0; i < n; ++i) {
-      if (i) j += ",";
-      j += "{\"ssid\":\"" + WiFi.SSID(i) + "\",\"rssi\":" + String(WiFi.RSSI(i)) + "}";
-    }
-    j += "]";
-    server.sendHeader("Access-Control-Allow-Origin", "*");
-    server.send(200, "application/json", j);
+  // Explicit favicon handler to stop browser favicon requests causing "request handler not found"
+  server.on("/favicon.ico", HTTP_GET, []() {
+    server.send(204, "image/x-icon", "");
   });
 
-  // Save WiFi credentials (GET params: ssid, pass) - convenience endpoint
-  server.on("/save", HTTP_GET, []() {
-    String s = server.arg("ssid");
-    String p = server.arg("pass");
-    Serial.printf("Save request SSID='%s' PASS='%s'\n", s.c_str(), p.c_str());
-    if (s.length() == 0) {
-      server.send(400, "text/plain", "missing ssid");
+  // Fallback handler to catch requests with no explicit handler (avoids WebServer.cpp: _handleRequest errors)
+  server.onNotFound([](){
+    String uri = server.uri();
+    Serial.print("NotFound: "); Serial.println(uri);
+    if (uri == "/favicon.ico") {
+      // respond with no content for favicon requests
+      server.send(204, "image/x-icon", "");
       return;
     }
-    prefs.begin("credentials", false);
-    prefs.putString("ssid", s);
-    prefs.putString("pass", p);
-    prefs.end();
-
-    // attempt connect immediately
-    WiFi.mode(WIFI_STA);
-    WiFi.begin(s.c_str(), p.c_str());
-    int attempts = 0;
-    while (WiFi.status() != WL_CONNECTED && attempts < WIFI_ATTEMPTS) {
-      delay(500);
-      Serial.print(".");
-      attempts++;
-    }
-    if (WiFi.status() == WL_CONNECTED) {
-      Serial.println("\nConnected to saved network: " + WiFi.localIP().toString());
-      server.send(200, "text/plain", "ok");
-    } else {
-      Serial.println("\nFailed to connect to saved network");
-      server.send(500, "text/plain", "failed");
-    }
+    // generic 404 for other missing resources
+    server.send(404, "text/plain", "Not found");
   });
 
   server.begin();
-  Serial.println("Server Started!");
 }
 
 void loop() {
   server.handleClient();
-
-  unsigned long now = millis();
-  unsigned long interval = recording ? 200 : BLINK_INTERVAL;
-  if (now - lastBlinkTime >= interval) {
+  
+  // LED Blinking Logic - يومض عند الاتصال، يتوقف عند قطع الاتصال
+  unsigned long currentTime = millis();
+  bool currentWiFiStatus = (WiFi.status() == WL_CONNECTED);
+  
+  // تحديث حالة الاتصال
+  if (currentWiFiStatus != wifiConnected) {
+    wifiConnected = currentWiFiStatus;
+    if (wifiConnected) {
+      Serial.println("WiFi Connected! IP: " + WiFi.localIP().toString());
+    } else {
+      Serial.println("WiFi Disconnected!");
+      digitalWrite(LED_BLUE, LOW);  // إطفاء LED عند فقدان الاتصال
+    }
+  }
+  
+  // التحكم في LED: يومض إذا كان متصل
+  if (wifiConnected && (currentTime - lastLEDToggle >= LED_BLINK_INTERVAL)) {
     ledState = !ledState;
-    digitalWrite(LED_PIN, ledState ? HIGH : LOW);
-    lastBlinkTime = now;
+    digitalWrite(LED_BLUE, ledState);
+    lastLEDToggle = currentTime;
   }
 }

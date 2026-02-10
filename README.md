@@ -1,126 +1,347 @@
-GSR_ESP32
-=========
+# GSR Stress Monitor with OneDrive Upload
 
-Project to run GSR stress monitor on ESP32 using PlatformIO.
+A complete system for recording and analyzing Galvanic Skin Response (GSR) data with automatic upload to OneDrive using secure Device Code Flow authentication.
 
-Files:
-- src/main.cpp : ESP32 code (HTTP server + GSR reading + web UI)
-- platformio.ini : PlatformIO environment
+## Quick Start (30 seconds)
 
-Build & Upload (in project root):
-
-# Mental_Stress_Detection (ESP32 GSR)
-
-Firmware and local UI for a Galvanic Skin Response (GSR) stress-monitoring device based on ESP32.
-
-This repository contains:
-- `src/main.cpp` - ESP32 firmware (PlatformIO / Arduino framework)
-- `platformio.ini` - PlatformIO project config
-- `ui/` - Local UI files and helper scripts (optional local hosting)
-	- `ui/index.html` - Local UI (works with the ESP32 AP)
-	- `ui/start_local_ui.command` - macOS helper to run a local HTTP server and open Chrome
-
-Important: the camera preview feature was experimented with but is optional; the current recommended workflow is to use the local UI or an Electron wrapper for the best experience.
-
-## Quick start (developer)
-Prerequisites:
-- PlatformIO (VS Code + PlatformIO extension) or PlatformIO Core CLI
-- Python 3 (for the optional local UI server)
-- Git
-
-Build & upload firmware (PlatformIO):
 ```bash
-# build and upload to the connected ESP32 (adjust upload-port)
-pio run -e esp32dev -t upload --upload-port /dev/cu.usbserial-0001
-```
-Open serial monitor:
-```bash
-pio device monitor -p /dev/cu.usbserial-0001 -b 115200
+# 1. First time only - install everything
+./setup.sh
+
+# 2. Start all services
+./START.sh
+
+# 3. Open browser to:
+http://localhost:8000/index.html
+
+# 4. When done - stop everything
+./STOP.sh
 ```
 
-## How users should run the UI (non-technical)
-Goal: user connects their laptop to the ESP32 Access Point (SSID: `GSR_Monitor`, password `12341234`), opens a browser and views data.
-
-Recommended (no terminal for user):
-- Provide users with a packaged Electron app (future). This will be the best one-click experience.
-
-Quick workaround (one-time setup on macOS):
-1. Connect the computer to the ESP32 AP `GSR_Monitor` (password `12341234`).
-2. Double-click the file `ui/start_local_ui.command` (first time only: make it executable via the Terminal: `chmod +x ui/start_local_ui.command`). This will:
-	 - start a local web server on `http://localhost:8000`
-	 - open Chrome to `http://localhost:8000/index.html` (local context => camera permission works more reliably)
-3. In the opened page press `Enable Camera` (if present) and then `Start Session` to begin logging GSR data.
-
-Notes:
-- If you prefer to skip the local helper, you can open `http://192.168.4.1` directly (device AP) — some browsers block camera access from IP/HTTP contexts. Using `localhost` avoids that limitation on Chrome.
-- CSV export: the UI provides a CSV download when the session stops.
-
-## Files of interest
-- `src/main.cpp` — HTTP endpoints implemented:
-	- `/` → serves embedded page (for quick testing)
-	- `/start` → starts recording session
-	- `/stop` → stops session
-	- `/resistance` → returns JSON with current reading
-	- `/scan` → Wi‑Fi scan results
-	- `/save?ssid=&pass=` → save credentials (attempts STA connect)
-
-- `ui/index.html` — local UI tailored to call `http://192.168.4.1` for device APIs. Use `ui/start_local_ui.command` to serve locally and open in Chrome.
-
-## Push to GitHub
-If this is a new repository locally, run the following commands (replace remote URL with your repo):
-```bash
-git init
-git add .
-git commit -m "Initial firmware + UI"
-git branch -M main
-git remote add origin https://github.com/Alansi775/Mental_Stress_Detection.git
-git push -u origin main
-```
-
-If this repo already exists and you just want to add a remote and push:
-```bash
-git remote add origin https://github.com/Alansi775/Mental_Stress_Detection.git
-git branch -M main
-git push -u origin main
-```
-
-## Future work
-- Package an Electron app (cross-platform) so non-technical users can double-click a single installer and open the UI with camera permissions automatically. (scaffold available upon request)
-- Add LLM Vision step: stream short summaries of participant state per second and correlate with GSR signal.
-
-## License
-Choose a license before publishing (MIT recommended). If you'd like, I can add an `LICENSE` file.
+That's it! Everything runs automatically.
 
 ---
-If you'd like, I can now:
-- scaffold the Electron wrapper and packaging scripts,
-- add an MIT `LICENSE` file,
-- or provide an automated `.app`/installer workflow you can run locally to generate distributables.
 
-## Screenshots
-Below are photos and screenshots you captured during testing. They show the device, the sensor in use, the web UI while recording, and the exported CSV data.
+## What This Does
 
-- **Connecting to ESP32 Wi‑Fi**
-	![Connecting to ESP WiFi](screenshots/connectingtoespwifi.png)
-	*Connecting the Mac to the ESP32 access point (GSR_Monitor) before opening the web UI.*
+1. **GSR Monitoring**: Reads data from ESP32 microcontroller
+2. **Video Recording**: Captures video with live data overlay
+3. **Data Export**: Saves CSV files with timestamps and readings
+4. **OneDrive Sync**: Automatically uploads files to OneDrive
+5. **Web UI**: Simple browser-based interface
 
-- **ESP32 with GSR sensor**
-	![ESP32 and GSR sensor](screenshots/esp32.jpg)
-	*The GSR sensor wired to the ESP32 (device overview).*
+---
 
-- **Monitoring — wearing the sensor**
-	![Monitoring with GSR sensor](screenshots/monitoring.jpg)
-	*Volunteer wearing the GSR sensor while data is being recorded.*
+## System Architecture
 
-- **Opening the web server & starting recording**
-	![Opening web server and start recording](screenshots/openingthwebserverandstartrecording.png)
-	*The moment the web UI is opened and `Start Session` is pressed (calibration stage).*
+```
+┌─────────────────┐
+│  Web UI         │  (port 8000)
+│  - Camera       │
+│  - Controls     │
+│  - Display      │
+└────────┬────────┘
+         │
+         │ HTTP requests
+         ▼
+┌─────────────────┐
+│  Flask Backend  │  (port 5000)
+│  - File upload  │
+│  - OneDrive API │
+│  - Retry logic  │
+└────────┬────────┘
+         │
+         │ HTTPS
+         ▼
+┌─────────────────┐
+│  Microsoft      │
+│  Graph API      │
+│  OneDrive       │
+└─────────────────┘
+```
 
-- **Second stage recording**
-	![Second stage recording](screenshots/secondstagerecording.png)
-	*Recording continued into the second (Normal) stage — can be paired with monitoring.jpg for context.*
+---
 
-- **Exported CSV file**
-	![CSV file data](screenshots/csvfiledata.png)
-	*Downloaded CSV file containing timestamped GSR values used for ML training.*
-.
+## File Structure
+
+```
+Mental_Stress_Detection/
+├── src/
+│   └── main.cpp              # ESP32 firmware
+├── ui/
+│   └── index.html            # Web interface
+├── backend/
+│   ├── device_auth.py        # OneDrive authentication
+│   ├── onedrive_uploader.py  # Flask server
+│   └── requirements.txt       # Python dependencies
+├── setup.sh                  # One-time setup script
+├── START.sh                  # Start everything
+├── STOP.sh                   # Stop everything
+└── README.md                 # This file
+```
+
+---
+
+## Setup Instructions
+
+### Prerequisites
+
+- macOS with Python 3.7+
+- pip3 (comes with Python)
+- Internet connection
+- OneDrive account
+
+### Installation
+
+Run once:
+
+```bash
+chmod +x setup.sh START.sh STOP.sh
+./setup.sh
+```
+
+This will:
+1. Create Python virtual environment (`venv`)
+2. Install Flask, MSAL, and other dependencies
+3. Show setup complete message
+
+### Authentication (OneDrive)
+
+After first run of `./START.sh`, you may need to authenticate:
+
+1. The system will show a Microsoft login URL
+2. Open the URL in your browser
+3. Sign in with your OneDrive account
+4. Grant permissions when prompted
+5. Device tokens are saved automatically
+
+---
+
+## Operation
+
+### Starting Everything
+
+```bash
+./START.sh
+```
+
+This starts:
+- Flask backend on `http://localhost:5000`
+- HTTP server on `http://localhost:8000`
+
+Then open: `http://localhost:8000/index.html`
+
+### Using the Application
+
+1. Enter volunteer number
+2. Click "Open Camera" to start recording
+3. Click "Start Session" to begin monitoring
+4. Follow the 5-stage protocol:
+   - Calibration (20 sec)
+   - Normal (4 min)
+   - Stress (3 min)
+   - Relax (1 min)
+   - Complete
+5. Session automatically stops
+6. CSV and video files auto-upload to OneDrive
+
+### Stopping Everything
+
+```bash
+./STOP.sh
+```
+
+Kills Flask and HTTP server cleanly.
+
+---
+
+## OneDrive Storage
+
+Files are automatically organized in OneDrive:
+
+```
+OneDrive/
+└── KFUPM_GSR_Project/
+    ├── V1/
+    │   ├── GSR_Data.csv
+    │   └── V1.webm
+    ├── V2/
+    │   ├── GSR_Data.csv
+    │   └── V2.webm
+    └── V3/
+        └── ...
+```
+
+---
+
+## APIs
+
+### Upload File
+```
+POST http://localhost:5000/api/upload
+
+{
+  "volunteer_id": "1",
+  "filename": "GSR_Data.csv",
+  "file_data": "base64_encoded_content",
+  "file_type": "csv"
+}
+```
+
+### Check Status
+```
+GET http://localhost:5000/api/status
+```
+
+---
+
+## Troubleshooting
+
+### Problem: "externally-managed-environment"
+**Solution**: Run `./setup.sh` to create virtual environment
+
+### Problem: "Module not found" (Flask, msal, etc.)
+**Solution**: 
+```bash
+./setup.sh
+```
+
+### Problem: Port already in use
+**Solution**: 
+```bash
+./STOP.sh    # Stop running services
+sleep 2
+./START.sh   # Start again
+```
+
+### Problem: Files not uploading
+Check:
+1. Internet connection is active
+2. Flask is running: `curl http://localhost:5000/api/status`
+3. OneDrive tokens valid (re-run setup if needed)
+
+### Problem: Camera not working
+Check:
+1. Browser permission granted
+2. Camera device connected
+3. Try another browser (Firefox, Chrome)
+
+---
+
+## Environment Variables
+
+Created automatically in `venv/`. To customize, edit `backend/onedrive_uploader.py`:
+
+- `FLASK_HOST`: 0.0.0.0
+- `FLASK_PORT`: 5000
+- `CHUNK_SIZE`: 327680 (320KB for resumable uploads)
+
+---
+
+## Security Notes
+
+- Tokens stored locally in `backend/onedrive_tokens.json`
+- No passwords stored - uses OAuth 2.0
+- Device Code Flow = no password needed
+- Mark `onedrive_tokens.json` as secret
+
+---
+
+## Performance
+
+- CSV upload: < 1 second
+- Video upload: 2-5 minutes (depends on file size)
+- Automatic retry: 3 attempts if upload fails
+- Resumable uploads: Restart safely if interrupted
+
+---
+
+## Dependencies
+
+All installed via `./setup.sh`:
+
+- Flask 2.3.2
+- Flask-CORS 4.0.0  
+- msal 1.24.0 (Microsoft Auth)
+- requests 2.31.0
+- python-dotenv 1.0.0
+
+---
+
+## ESP32 Configuration
+
+The ESP32 uses static IP: `10.155.83.100`
+
+To change:
+1. Edit `src/main.cpp`, find IP configuration
+2. Recompile and upload to ESP32
+3. Update UI IP field if needed
+
+Default WiFi SSID: `TEKMER WIFI`
+
+---
+
+## Development
+
+### Running Flask manually:
+```bash
+source venv/bin/activate
+python3 backend/onedrive_uploader.py
+```
+
+### Running HTTP server manually:
+```bash
+cd ui
+python3 -m http.server 8000
+```
+
+### Checking logs:
+```bash
+tail -f .pids/flask.log
+```
+
+---
+
+## Support
+
+For issues:
+1. Check this README
+2. Run `./STOP.sh` then `./START.sh` 
+3. Check browser console (F12)
+4. Verify all network connections
+
+---
+
+## License
+
+MIT License - Free to use and modify
+
+---
+
+## Project Structure Summary
+
+| Component | Location | Purpose |
+|-----------|----------|---------|
+| Web UI | `ui/index.html` | User interface |
+| ESP32 | `src/main.cpp` | Hardware control |
+| Backend | `backend/onedrive_uploader.py` | File upload server |
+| Auth | `backend/device_auth.py` | OneDrive login |
+| Setup | `setup.sh` | One-time installation |
+| Start | `START.sh` | Launch everything |
+| Stop | `STOP.sh` | Clean shutdown |
+
+---
+
+## Next Steps
+
+1. Run `./setup.sh` once
+2. Run `./START.sh` to begin
+3. Open `http://localhost:8000/index.html`
+4. Start monitoring!
+
+That's all you need to know. The system handles everything else automatically.
+
+---
+
+**Version**: 2.0 (OneDrive Sync Edition)  
+**Last Updated**: February 2026
