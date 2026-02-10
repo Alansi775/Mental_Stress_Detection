@@ -3,3 +3,7 @@
 .vscode/c_cpp_properties.json
 .vscode/launch.json
 .vscode/ipch
+# Credentials and tokens - never commit these
+backend/credentials.json
+backend/onedrive_tokens.json
+*.json.example
