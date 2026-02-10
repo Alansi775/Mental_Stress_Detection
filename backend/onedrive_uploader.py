@@ -36,9 +36,13 @@ import os
 import base64
 from datetime import datetime
 import msal
+from dotenv import load_dotenv
 
 app = Flask(__name__)
 CORS(app)
+
+# Load environment variables
+load_dotenv(os.path.join(os.path.dirname(__file__), '.env'))
 
 # Microsoft Graph settings
 TENANT = "consumers"
@@ -53,8 +57,17 @@ TOKEN_CACHE_FILE = os.path.join(SCRIPT_DIR, TOKEN_FILE_NAME)
 # Resumable Upload settings
 CHUNK_SIZE = 327680  # 320 KB per chunk
 
+# Storage configuration from .env
+UPLOAD_MODE = os.getenv('UPLOAD_MODE', 'local')  # 'local' or 'onedrive'
+ONEDRIVE_PATH = os.getenv('ONEDRIVE_PATH', '')
+
 # Local storage fallback
 LOCAL_STORAGE_DIR = os.path.join(SCRIPT_DIR, "..", "uploads")
+if UPLOAD_MODE == 'onedrive' and ONEDRIVE_PATH:
+    LOCAL_STORAGE_DIR = ONEDRIVE_PATH
+
+print(f"[CONFIG] Upload mode: {UPLOAD_MODE}")
+print(f"[CONFIG] Storage path: {LOCAL_STORAGE_DIR}")
 
 # Global variables
 access_token = None
